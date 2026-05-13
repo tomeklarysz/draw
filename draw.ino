@@ -6,9 +6,13 @@
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 ESP32Encoder encX;
 ESP32Encoder encY;
+uint8_t canvas[128][64 / 8];
+bool isPenDown = false;
 
 int posX = 64;
 int posY = 32;
+
+const int LEFT_ENC_KEY_PIN = 15;
 
 void setup() {
   Wire.begin(26, 27);
@@ -23,20 +27,35 @@ void setup() {
 }
 
 void loop() {
-  int newX = encX.getCount();
-  int newY = encY.getCount();
+  int x = encX.getCount() % 128;
+  int y = encY.getCount() % 64;
 
-  // krawedzie
-  if (newX < 0) { newX = 0; encX.setCount(0); }
-  if (newX > 127) { newX = 127; encX.setCount(127); }
-  if (newY < 0) { newY = 0; encY.setCount(0); }
-  if (newY > 63) { newY = 63; encY.setCount(63); }
-
-  if (newX != posX || newY != posY) {
-    u8g2.drawPixel(newX, newY); 
-    u8g2.sendBuffer(); // Wysyłamy aktualizację na ekran
-    
-    posX = newX;
-    posY = newY;
+  if (digitalRead(LEFT_ENC_KEY_PIN) == LOW) {
+    isPenDown = !isPenDown;
+    delay(200);
   }
+
+  u8g2.clearBuffer();
+
+  u8g2.setDrawColor(1);
+  for (int i = 0; i < 128; i++) {
+    for (int j = 0; j < 64; j++) {
+      if (canvas[i][j/8] & (1 << (j%8))) {
+        u8g2.drawPixel(i, j);
+      }
+    }
+  }
+
+  // jesli pen down to chcemy rysowac to co w canvas
+  // jesli nie to chcemy tryb xor
+  if (isPenDown) {
+    canvas[x][y/8] |= (1 << (y%8));
+    u8g2.drawPixel(x, y);
+  } else {
+    u8g2.setDrawColor(2); 
+    u8g2.drawFrame(x - 2, y - 2, 5, 5);
+  }
+
+  u8g2.sendBuffer();
+
 }
