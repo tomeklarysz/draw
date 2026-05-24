@@ -12,25 +12,44 @@ bool isPenDown = false;
 int posX = 64;
 int posY = 32;
 
-const int LEFT_ENC_KEY_PIN = 15;
+const int SDA_ = 25;
+const int SCK_ = 33;
+
+const int ENCX_S1 = 34;
+const int ENCX_S2 = 35;
+const int ENCX_KEY = 32;
+
+const int ENCY_S1 = 26;
+const int ENCY_S2 = 27;
+const int ENCY_KEY = 13;
 
 void setup() {
-  Wire.begin(26, 27);
+  Serial.begin(115200);
+  Wire.begin(SDA_, SCK_);
   u8g2.begin();
 
   ESP32Encoder::useInternalWeakPullResistors = puType::up;
-  encX.attachHalfQuad(22, 23);
+  encX.attachHalfQuad(ENCX_S2, ENCX_S1);
   encX.setCount(posX);
 
-  encY.attachHalfQuad(34, 35);
+  encY.attachHalfQuad(ENCY_S1, ENCY_S2);
   encY.setCount(posY);
+
+  pinMode(ENCX_KEY, INPUT_PULLUP);
 }
 
 void loop() {
-  int x = encX.getCount() % 128;
-  int y = encY.getCount() % 64;
 
-  if (digitalRead(LEFT_ENC_KEY_PIN) == LOW) {
+  int x = encX.getCount();
+  if (x < 0) { x = 0; encX.setCount(0); }
+  if (x > 127) { x = 127; encX.setCount(127); }
+  
+  int y = encY.getCount() % 64;
+  if (y < 0) { x = 0; encY.setCount(0); }
+  if (y > 63) { x = 127; encY.setCount(63); }
+
+  if (digitalRead(ENCX_KEY) == LOW) {
+    Serial.println("key clicked");
     isPenDown = !isPenDown;
     delay(200);
   }
