@@ -7,18 +7,22 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <ArduinoOTA.h>
 #include "secrets.h"
 
+const String TERMINAL_ID = "tomek";
 
-const String TERMINAL_ID = "Terminal_A"; 
-
-// --- PAMIĘĆ HISTORII RYSUNKÓW (Lokalny bufor na 5 sztuk) ---
+// --- PAMIĘĆ HISTORII RYSUNKÓW ---
 String historyCanvas[5];
 String historySender[5];
 int historyCount = 0;       
 int currentHistoryIndex = 0; 
 
 bool isBrowsingHistory = false;
+unsigned long historyBarTimer = 0;
+
+int lastDrawX = -1;
+int lastDrawY = -1;
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 ESP32Encoder encX;
@@ -26,7 +30,7 @@ ESP32Encoder encY;
 uint8_t canvas[128][64 / 8];
 bool isPenDown = false;
 bool isMenuOpen = false;
-int menuSelection = 0; // 0 - send, 1 - history, 2 - clear
+int menuSelection = 0; 
 int lastEncYCount = 0;
 
 int posX = 64;
@@ -43,7 +47,6 @@ const int ENCY_S1 = 26;
 const int ENCY_S2 = 27;
 const int ENCY_KEY = 13;
 
-// Konwersja tablicy canvas na String HEX
 String packCanvas() {
   String output = "";
   for (int i = 0; i < 128; i++) {
@@ -55,7 +58,6 @@ String packCanvas() {
   return output;
 }
 
-// Konwersja Stringa HEX z powrotem do tablicy canvas
 void unpackCanvas(String input) {
   int charIndex = 0;
   for (int i = 0; i < 128; i++) {
@@ -69,7 +71,6 @@ void unpackCanvas(String input) {
   }
 }
 
-// Pobieranie 5 ostatnich rysunków przez surowe HTTP GET
 void downloadHistory() {
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tf);
@@ -78,10 +79,9 @@ void downloadHistory() {
 
   if (WiFi.status() == WL_CONNECTED) {
     WiFiClientSecure client;
-    client.setInsecure(); // Pomijamy weryfikację certyfikatu dla szybkości
+    client.setInsecure(); 
     HTTPClient http;
 
-    // Budujemy pełny URL zapytania REST dla Firebase
     String url = String(FIREBASE_HOST) + "/znikopis_history.json?auth=" + String(FIREBASE_AUTH);
     
     http.begin(client, url);
@@ -90,37 +90,34 @@ void downloadHistory() {
     if (httpCode == HTTP_CODE_OK) {
       String response = http.getString();
       if (response != "null") {
-        Serial.println("Pobrano historie z bazy.");
-        
         JsonDocument doc;
         DeserializationError error = deserializeJson(doc, response);
 
         if (!error) {
-          int index = 0;
           JsonObject root = doc.as<JsonObject>();
+          int totalIncoming = root.size();
+          if (totalIncoming > 5) totalIncoming = 5;
+          historyCount = totalIncoming;
           
+          int index = totalIncoming - 1; 
           for (JsonPair p : root) {
             JsonObject drawingObj = p.value().as<JsonObject>();
             if (drawingObj.containsKey("sender") && drawingObj.containsKey("canvas_data")) {
-              historySender[index] = drawingObj["sender"].as<String>();
-              historyCanvas[index] = drawingObj["canvas_data"].as<String>();
-              index++;
-              if (index >= 5) break; 
+              if (index >= 0) {
+                historySender[index] = drawingObj["sender"].as<String>();
+                historyCanvas[index] = drawingObj["canvas_data"].as<String>();
+                index--;
+              }
             }
           }
-          historyCount = index;
-          if (historyCount > 0) currentHistoryIndex = historyCount - 1;
-          Serial.printf("Sparsowano %d rysunkow.\n", historyCount);
+          if (historyCount > 0) currentHistoryIndex = 0; 
         }
       }
-    } else {
-      Serial.printf("Blad HTTP GET: %d\n", httpCode);
     }
     http.end();
   }
 }
 
-// Wysyłanie rysunku przez surowe HTTP POST
 void uploadDrawing() {
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tf);
@@ -137,19 +134,44 @@ void uploadDrawing() {
 
     http.begin(client, url);
     http.addHeader("Content-Type", "application/json");
-    
     int httpCode = http.POST(jsonPayload);
 
     if (httpCode == HTTP_CODE_OK || httpCode == 201) {
-      Serial.println("Rysunek wysłany!");
       downloadHistory();
-    } else {
-      Serial.printf("Blad HTTP POST: %d\n", httpCode);
     }
     http.end();
-  } else {
-  Serial.println("DIAGNOSTYKA: Brak połączenia z WiFi w momencie próby pobrania!");
   }
+}
+
+// --- NOWA FUNKCJA: Konfiguracja managera OTA ---
+void setupOTA() {
+  ArduinoOTA.setHostname("znikopis-tomek-v2");
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+
+  ArduinoOTA.onStart([]() {
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.drawStr(10, 30, "OTA Update...");
+    u8g2.sendBuffer();
+  });
+
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    int percent = progress / (total / 100);
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.drawStr(10, 25, "Updating code:");
+    u8g2.drawFrame(10, 35, 108, 10);
+    u8g2.drawBox(12, 37, (percent * 104) / 100, 6);
+    u8g2.sendBuffer();
+  });
+
+  ArduinoOTA.onEnd([]() {
+    u8g2.clearBuffer();
+    u8g2.drawStr(10, 36, "Success! Restart...");
+    u8g2.sendBuffer();
+  });
+
+  ArduinoOTA.begin();
 }
 
 void setup() {
@@ -176,24 +198,30 @@ void setup() {
   wm.autoConnect("Terminal-Setup");
   Serial.println("Połączono z WiFi!");
 
-  // Pierwsze pobranie historii po zalogowaniu do sieci
+  // Uruchomienie obsługi bezprzewodowej
+  setupOTA();
+
   downloadHistory();
 }
 
 void loop() {
+  // --- KLUCZOWE: Sprawdzanie żądań OTA w każdej klatce ---
+  ArduinoOTA.handle();
+
   int x = posX, y = posY;
   
   if (isBrowsingHistory) {
     int currentEncYCount = encY.getCount();
     if (currentEncYCount != lastEncYCount) {
-      if (currentEncYCount > lastEncYCount) currentHistoryIndex--;
-      else currentHistoryIndex++;
+      if (currentEncYCount > lastEncYCount) currentHistoryIndex++; 
+      else currentHistoryIndex--;
 
       if (currentHistoryIndex >= historyCount) currentHistoryIndex = 0;
       if (currentHistoryIndex < 0) currentHistoryIndex = historyCount - 1;
 
       unpackCanvas(historyCanvas[currentHistoryIndex]); 
       lastEncYCount = currentEncYCount;
+      historyBarTimer = millis();
     }
   } 
   else if (!isMenuOpen) {
@@ -202,7 +230,7 @@ void loop() {
     if (x > 127) { x = 127; encX.setCount(127); }
 
     y = encY.getCount() % 64;
-    if (y < 0) { y = 0; encY.setCount(0); }         
+    if (y < 0) { y = 0; encY.setCount(0); }          
     if (y > 63) { y = 63; encY.setCount(63); }      
   } else {
     int currentEncYCount = encY.getCount();
@@ -219,6 +247,7 @@ void loop() {
 
   if (digitalRead(ENCX_KEY) == LOW) {
     isPenDown = !isPenDown;
+    if (isPenDown) { lastDrawX = -1; lastDrawY = -1; }
     delay(200);
   }
 
@@ -235,9 +264,12 @@ void loop() {
       if (menuSelection == 0) {
         uploadDrawing();
       } else if (menuSelection == 1) {
+        downloadHistory(); 
         if (historyCount > 0) {
           isBrowsingHistory = true;
           unpackCanvas(historyCanvas[currentHistoryIndex]);
+          lastEncYCount = encY.getCount(); 
+          historyBarTimer = millis();
         }
       } else if (menuSelection == 2) {
         memset(canvas, 0, sizeof(canvas));
@@ -250,7 +282,6 @@ void loop() {
   }
 
   u8g2.clearBuffer();
-
   u8g2.setDrawColor(1);
   for (int i = 0; i < 128; i++) {
     for (int j = 0; j < 64; j++) {
@@ -263,16 +294,24 @@ void loop() {
   bool blinkState = (millis() / 250) % 2;
   
   if (isBrowsingHistory) {
-    u8g2.setDrawColor(0);
-    u8g2.drawBox(0, 0, 128, 11); 
-    u8g2.setDrawColor(1);
-    u8g2.setFont(u8g2_font_5x7_tf);
-    String topBar = "[" + historySender[currentHistoryIndex] + "] " + String(currentHistoryIndex + 1) + "/" + String(historyCount);
-    u8g2.drawStr(4, 8, topBar.c_str());
-    u8g2.drawFrame(0, 11, 128, 1);
+    if (millis() - historyBarTimer < 3000) {
+      u8g2.setDrawColor(0);
+      u8g2.drawBox(0, 0, 128, 11); 
+      u8g2.setDrawColor(1);
+      u8g2.setFont(u8g2_font_5x7_tf);
+      String topBar = "[" + historySender[currentHistoryIndex] + "] " + String(currentHistoryIndex + 1) + "/" + String(historyCount);
+      u8g2.drawStr(4, 8, topBar.c_str());
+      u8g2.drawFrame(0, 11, 128, 1);
+    }
   } else if (!isMenuOpen) {
     if (isPenDown) {
-      canvas[x][y/8] |= (1 << (y%8));
+      if (lastDrawX == -1 && lastDrawY == -1) {
+        lastDrawX = x; lastDrawY = y;
+      } 
+      else if (x != lastDrawX || y != lastDrawY) {
+        canvas[x][y/8] |= (1 << (y%8));
+        lastDrawX = x; lastDrawY = y;
+      }
       if (blinkState) { u8g2.setDrawColor(1); u8g2.drawPixel(x, y); } 
       else { u8g2.setDrawColor(2); u8g2.drawPixel(x, y); }
     } else {
