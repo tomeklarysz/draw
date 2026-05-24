@@ -65,14 +65,25 @@ void loop() {
     }
   }
 
+  bool blinkState = (millis() / 250) % 2;
+
   // jesli pen down to chcemy rysowac to co w canvas
   // jesli nie to chcemy tryb xor
   if (isPenDown) {
     canvas[x][y/8] |= (1 << (y%8));
-    u8g2.drawPixel(x, y);
+    
+    if (blinkState) {
+      u8g2.setDrawColor(1);
+      u8g2.drawPixel(x, y);
+    } else {
+      u8g2.setDrawColor(2);
+      u8g2.drawPixel(x, y);
+    }
   } else {
-    u8g2.setDrawColor(2); 
-    u8g2.drawFrame(x - 2, y - 2, 5, 5);
+    if (blinkState) {
+      u8g2.setDrawColor(2); 
+      u8g2.drawFrame(x - 2, y - 2, 5, 5);
+    }
   }
 
   u8g2.sendBuffer();
